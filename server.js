@@ -1,75 +1,55 @@
 const express = require('express');
-const Database = require('better-sqlite3');
+const fs = require('fs');
+const path = require('path');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'ledger_super_secret_key_2024_change_in_prod';
 
-// Ensure data directory exists
-const dataDir = '/app/data';
+// Data storage (in production, use a proper database)
+let users = [];
+let transactions = [];
+let categories = [
+  { id: 1, name: 'Salary', icon: '💼', type: 'credit' },
+  { id: 2, name: 'Freelance', icon: '💻', type: 'credit' },
+  { id: 3, name: 'Investment', icon: '📈', type: 'credit' },
+  { id: 4, name: 'Rent', icon: '🏠', type: 'debit' },
+  { id: 5, name: 'Food & Dining', icon: '🍽️', type: 'debit' },
+  { id: 6, name: 'Transport', icon: '🚗', type: 'debit' },
+  { id: 7, name: 'Shopping', icon: '🛍️', type: 'debit' },
+  { id: 8, name: 'Utilities', icon: '⚡', type: 'debit' },
+  { id: 9, name: 'Healthcare', icon: '🏥', type: 'debit' },
+  { id: 10, name: 'Entertainment', icon: '🎬', type: 'debit' },
+  { id: 11, name: 'Education', icon: '📚', type: 'debit' },
+  { id: 12, name: 'Travel', icon: '✈️', type: 'both' },
+  { id: 13, name: 'Transfer', icon: '🔄', type: 'both' },
+  { id: 14, name: 'Other', icon: '📌', type: 'both' }
+];
+
+// Load data from files
+const dataDir = path.join(__dirname, 'data');
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-// Init SQLite DB
-const db = new Database(path.join(dataDir, 'ledger.db'));
+const usersFile = path.join(dataDir, 'users.json');
+const transactionsFile = path.join(dataDir, 'transactions.json');
 
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    full_name TEXT,
-    created_at TEXT DEFAULT (datetime('now'))
-  );
+if (fs.existsSync(usersFile)) {
+  users = JSON.parse(fs.readFileSync(usersFile, 'utf8'));
+}
+if (fs.existsSync(transactionsFile)) {
+  transactions = JSON.parse(fs.readFileSync(transactionsFile, 'utf8'));
+}
 
-  CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    icon TEXT DEFAULT '📁',
-    type TEXT DEFAULT 'both'
-  );
+// Save functions
+function saveUsers() {
+  fs.writeFileSync(usersFile, JSON.stringify(users, null, 2));
+}
 
-  CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    type TEXT NOT NULL CHECK(type IN ('debit','credit')),
-    amount REAL NOT NULL,
-    description TEXT NOT NULL,
-    category_id INTEGER,
-    reference TEXT,
-    note TEXT,
-    date TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now')),
-    FOREIGN KEY (user_id) REFERENCES users(id),
-    FOREIGN KEY (category_id) REFERENCES categories(id)
-  );
-
-  CREATE TABLE IF NOT EXISTS transaction_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    transaction_id INTEGER NOT NULL,
-    linked_transaction_id INTEGER NOT NULL,
-    FOREIGN KEY (transaction_id) REFERENCES transactions(id),
-    FOREIGN KEY (linked_transaction_id) REFERENCES transactions(id)
-  );
-`);
-
-// Seed default categories if empty
-const catCount = db.prepare('SELECT COUNT(*) as c FROM categories').get();
-if (catCount.c === 0) {
-  const insertCat = db.prepare('INSERT INTO categories (name, icon, type) VALUES (?, ?, ?)');
-  const cats = [
-    ['Salary', '💼', 'credit'], ['Freelance', '💻', 'credit'], ['Investment', '📈', 'credit'],
-    ['Rent', '🏠', 'debit'], ['Food & Dining', '🍽️', 'debit'], ['Transport', '🚗', 'debit'],
-    ['Shopping', '🛍️', 'debit'], ['Utilities', '⚡', 'debit'], ['Healthcare', '🏥', 'debit'],
-    ['Entertainment', '🎬', 'debit'], ['Education', '📚', 'debit'], ['Travel', '✈️', 'both'],
-    ['Transfer', '🔄', 'both'], ['Other', '📌', 'both']
-  ];
-  cats.forEach(c => insertCat.run(...c));
+function saveTransactions() {
+  fs.writeFileSync(transactionsFile, JSON.stringify(transactions, null, 2));
 }
 
 app.use(cors());
@@ -96,22 +76,29 @@ app.post('/api/auth/register', (req, res) => {
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
 
-  const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username.toLowerCase().trim());
+  const existing = users.find(u => u.username.toLowerCase() === username.toLowerCase().trim());
   if (existing) return res.status(409).json({ error: 'Username already taken' });
 
   const hash = bcrypt.hashSync(password, 10);
-  const result = db.prepare('INSERT INTO users (username, password_hash, full_name) VALUES (?, ?, ?)').run(
-    username.toLowerCase().trim(), hash, full_name || username
-  );
-  const token = jwt.sign({ id: result.lastInsertRowid, username: username.toLowerCase().trim() }, JWT_SECRET, { expiresIn: '7d' });
-  res.json({ token, user: { id: result.lastInsertRowid, username, full_name: full_name || username } });
+  const newUser = {
+    id: Date.now(),
+    username: username.toLowerCase().trim(),
+    password_hash: hash,
+    full_name: full_name || username,
+    created_at: new Date().toISOString()
+  };
+  users.push(newUser);
+  saveUsers();
+
+  const token = jwt.sign({ id: newUser.id, username: newUser.username }, JWT_SECRET, { expiresIn: '7d' });
+  res.json({ token, user: { id: newUser.id, username: newUser.username, full_name: newUser.full_name } });
 });
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username.toLowerCase().trim());
+  const user = users.find(u => u.username === username.toLowerCase().trim());
   if (!user || !bcrypt.compareSync(password, user.password_hash))
     return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -121,35 +108,49 @@ app.post('/api/auth/login', (req, res) => {
 
 // ── CATEGORY ROUTES ──────────────────────────────────────────────────────────
 app.get('/api/categories', authMiddleware, (req, res) => {
-  const cats = db.prepare('SELECT * FROM categories ORDER BY name').all();
-  res.json(cats);
+  res.json(categories);
 });
 
 // ── TRANSACTION ROUTES ───────────────────────────────────────────────────────
 app.get('/api/transactions', authMiddleware, (req, res) => {
   const { type, category_id, reference, from_date, to_date, search, limit = 100, offset = 0 } = req.query;
-  let query = `
-    SELECT t.*, c.name as category_name, c.icon as category_icon
-    FROM transactions t
-    LEFT JOIN categories c ON t.category_id = c.id
-    WHERE t.user_id = ?
-  `;
-  const params = [req.user.id];
 
-  if (type) { query += ' AND t.type = ?'; params.push(type); }
-  if (category_id) { query += ' AND t.category_id = ?'; params.push(category_id); }
-  if (reference) { query += ' AND t.reference LIKE ?'; params.push(`%${reference}%`); }
-  if (from_date) { query += ' AND t.date >= ?'; params.push(from_date); }
-  if (to_date) { query += ' AND t.date <= ?'; params.push(to_date); }
-  if (search) { query += ' AND (t.description LIKE ? OR t.note LIKE ? OR t.reference LIKE ?)'; params.push(`%${search}%`, `%${search}%`, `%${search}%`); }
+  let filtered = transactions.filter(t => t.user_id === req.user.id);
 
-  query += ' ORDER BY t.date DESC, t.created_at DESC LIMIT ? OFFSET ?';
-  params.push(Number(limit), Number(offset));
+  if (type) filtered = filtered.filter(t => t.type === type);
+  if (category_id) filtered = filtered.filter(t => t.category_id == category_id);
+  if (reference) filtered = filtered.filter(t => t.reference && t.reference.toLowerCase().includes(reference.toLowerCase()));
+  if (from_date) filtered = filtered.filter(t => t.date >= from_date);
+  if (to_date) filtered = filtered.filter(t => t.date <= to_date);
+  if (search) {
+    const searchLower = search.toLowerCase();
+    filtered = filtered.filter(t =>
+      t.description.toLowerCase().includes(searchLower) ||
+      (t.note && t.note.toLowerCase().includes(searchLower)) ||
+      (t.reference && t.reference.toLowerCase().includes(searchLower))
+    );
+  }
 
-  const transactions = db.prepare(query).all(...params);
-  const countQuery = query.replace(/SELECT t\.\*, c\.name as category_name, c\.icon as category_icon/, 'SELECT COUNT(*) as total').replace(/ORDER BY.*/, '');
+  // Sort by date desc, then created_at desc
+  filtered.sort((a, b) => {
+    if (a.date !== b.date) return b.date.localeCompare(a.date);
+    return b.created_at.localeCompare(a.created_at);
+  });
 
-  res.json({ transactions, total: db.prepare(countQuery).get(...params.slice(0, -2)).total });
+  const total = filtered.length;
+  const paginated = filtered.slice(Number(offset), Number(offset) + Number(limit));
+
+  // Add category info
+  const result = paginated.map(t => {
+    const category = categories.find(c => c.id == t.category_id);
+    return {
+      ...t,
+      category_name: category ? category.name : null,
+      category_icon: category ? category.icon : null
+    };
+  });
+
+  res.json({ transactions: result, total });
 });
 
 app.post('/api/transactions', authMiddleware, (req, res) => {
@@ -158,128 +159,126 @@ app.post('/api/transactions', authMiddleware, (req, res) => {
   if (!['debit', 'credit'].includes(type)) return res.status(400).json({ error: 'type must be debit or credit' });
   if (amount <= 0) return res.status(400).json({ error: 'amount must be positive' });
 
-  const result = db.prepare(`
-    INSERT INTO transactions (user_id, type, amount, description, category_id, reference, note, date)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(req.user.id, type, parseFloat(amount), description, category_id || null, reference || null, note || null, date);
+  const newTransaction = {
+    id: Date.now(),
+    user_id: req.user.id,
+    type,
+    amount: parseFloat(amount),
+    description,
+    category_id: category_id || null,
+    reference: reference || null,
+    note: note || null,
+    date,
+    created_at: new Date().toISOString()
+  };
 
-  const txnId = result.lastInsertRowid;
+  transactions.push(newTransaction);
+  saveTransactions();
 
-  // Link related transactions
-  if (linked_ids && Array.isArray(linked_ids) && linked_ids.length > 0) {
-    const linkStmt = db.prepare('INSERT OR IGNORE INTO transaction_links (transaction_id, linked_transaction_id) VALUES (?, ?)');
-    linked_ids.forEach(lid => {
-      linkStmt.run(txnId, lid);
-      linkStmt.run(lid, txnId);
-    });
-  }
+  const category = categories.find(c => c.id == newTransaction.category_id);
+  const result = {
+    ...newTransaction,
+    category_name: category ? category.name : null,
+    category_icon: category ? category.icon : null
+  };
 
-  const txn = db.prepare(`
-    SELECT t.*, c.name as category_name, c.icon as category_icon
-    FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.id = ?
-  `).get(txnId);
-
-  res.json(txn);
+  res.json(result);
 });
 
 app.put('/api/transactions/:id', authMiddleware, (req, res) => {
   const { type, amount, description, category_id, reference, note, date } = req.body;
-  const txn = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-  if (!txn) return res.status(404).json({ error: 'Transaction not found' });
+  const txnIndex = transactions.findIndex(t => t.id == req.params.id && t.user_id === req.user.id);
+  if (txnIndex === -1) return res.status(404).json({ error: 'Transaction not found' });
 
-  db.prepare(`
-    UPDATE transactions SET type=?, amount=?, description=?, category_id=?, reference=?, note=?, date=?
-    WHERE id = ? AND user_id = ?
-  `).run(
-    type || txn.type, parseFloat(amount) || txn.amount, description || txn.description,
-    category_id !== undefined ? category_id : txn.category_id,
-    reference !== undefined ? reference : txn.reference,
-    note !== undefined ? note : txn.note,
-    date || txn.date, req.params.id, req.user.id
-  );
+  const txn = transactions[txnIndex];
+  const updated = {
+    ...txn,
+    type: type || txn.type,
+    amount: amount ? parseFloat(amount) : txn.amount,
+    description: description || txn.description,
+    category_id: category_id !== undefined ? category_id : txn.category_id,
+    reference: reference !== undefined ? reference : txn.reference,
+    note: note !== undefined ? note : txn.note,
+    date: date || txn.date
+  };
 
-  const updated = db.prepare(`
-    SELECT t.*, c.name as category_name, c.icon as category_icon
-    FROM transactions t LEFT JOIN categories c ON t.category_id = c.id WHERE t.id = ?
-  `).get(req.params.id);
-  res.json(updated);
+  transactions[txnIndex] = updated;
+  saveTransactions();
+
+  const category = categories.find(c => c.id == updated.category_id);
+  res.json({
+    ...updated,
+    category_name: category ? category.name : null,
+    category_icon: category ? category.icon : null
+  });
 });
 
 app.delete('/api/transactions/:id', authMiddleware, (req, res) => {
-  const txn = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-  if (!txn) return res.status(404).json({ error: 'Transaction not found' });
-  db.prepare('DELETE FROM transaction_links WHERE transaction_id = ? OR linked_transaction_id = ?').run(req.params.id, req.params.id);
-  db.prepare('DELETE FROM transactions WHERE id = ? AND user_id = ?').run(req.params.id, req.user.id);
+  const txnIndex = transactions.findIndex(t => t.id == req.params.id && t.user_id === req.user.id);
+  if (txnIndex === -1) return res.status(404).json({ error: 'Transaction not found' });
+
+  transactions.splice(txnIndex, 1);
+  saveTransactions();
   res.json({ success: true });
-});
-
-// Get linked transactions for a given transaction
-app.get('/api/transactions/:id/links', authMiddleware, (req, res) => {
-  const txn = db.prepare('SELECT * FROM transactions WHERE id = ? AND user_id = ?').get(req.params.id, req.user.id);
-  if (!txn) return res.status(404).json({ error: 'Transaction not found' });
-
-  const links = db.prepare(`
-    SELECT t.*, c.name as category_name, c.icon as category_icon
-    FROM transaction_links tl
-    JOIN transactions t ON t.id = tl.linked_transaction_id
-    LEFT JOIN categories c ON t.category_id = c.id
-    WHERE tl.transaction_id = ? AND t.user_id = ?
-  `).all(req.params.id, req.user.id);
-  res.json(links);
 });
 
 // ── SUMMARY / ANALYTICS ──────────────────────────────────────────────────────
 app.get('/api/summary', authMiddleware, (req, res) => {
   const { month, year } = req.query;
-  let dateFilter = '';
-  const params = [req.user.id];
+
+  let filtered = transactions.filter(t => t.user_id === req.user.id);
 
   if (month && year) {
-    dateFilter = `AND strftime('%Y-%m', date) = ?`;
-    params.push(`${year}-${String(month).padStart(2, '0')}`);
+    filtered = filtered.filter(t => {
+      const d = new Date(t.date);
+      return d.getFullYear() == year && d.getMonth() + 1 == month;
+    });
   } else if (year) {
-    dateFilter = `AND strftime('%Y', date) = ?`;
-    params.push(year);
+    filtered = filtered.filter(t => new Date(t.date).getFullYear() == year);
   }
 
-  const totals = db.prepare(`
-    SELECT
-      COALESCE(SUM(CASE WHEN type='credit' THEN amount ELSE 0 END), 0) as total_credit,
-      COALESCE(SUM(CASE WHEN type='debit' THEN amount ELSE 0 END), 0) as total_debit,
-      COUNT(*) as total_transactions
-    FROM transactions WHERE user_id = ? ${dateFilter}
-  `).get(...params);
+  const totals = filtered.reduce((acc, t) => {
+    acc.total_credit += t.type === 'credit' ? t.amount : 0;
+    acc.total_debit += t.type === 'debit' ? t.amount : 0;
+    acc.total_transactions += 1;
+    return acc;
+  }, { total_credit: 0, total_debit: 0, total_transactions: 0 });
 
-  const byCategory = db.prepare(`
-    SELECT c.name, c.icon, t.type,
-      SUM(t.amount) as total, COUNT(*) as count
-    FROM transactions t
-    LEFT JOIN categories c ON t.category_id = c.id
-    WHERE t.user_id = ? ${dateFilter}
-    GROUP BY t.category_id, t.type
-    ORDER BY total DESC
-  `).all(...params);
+  const byCategory = {};
+  filtered.forEach(t => {
+    const cat = categories.find(c => c.id == t.category_id) || { name: 'Uncategorized', icon: '📌' };
+    const key = `${cat.name}|${t.type}`;
+    if (!byCategory[key]) {
+      byCategory[key] = { name: cat.name, icon: cat.icon, type: t.type, total: 0, count: 0 };
+    }
+    byCategory[key].total += t.amount;
+    byCategory[key].count += 1;
+  });
 
-  const monthly = db.prepare(`
-    SELECT strftime('%Y-%m', date) as month,
-      SUM(CASE WHEN type='credit' THEN amount ELSE 0 END) as credit,
-      SUM(CASE WHEN type='debit' THEN amount ELSE 0 END) as debit
-    FROM transactions WHERE user_id = ?
-    GROUP BY month ORDER BY month DESC LIMIT 12
-  `).all(req.user.id);
+  const monthly = {};
+  transactions.filter(t => t.user_id === req.user.id).forEach(t => {
+    const monthKey = t.date.substring(0, 7); // YYYY-MM
+    if (!monthly[monthKey]) monthly[monthKey] = { month: monthKey, credit: 0, debit: 0 };
+    monthly[monthKey][t.type] += t.amount;
+  });
 
-  const recentTransactions = db.prepare(`
-    SELECT t.*, c.name as category_name, c.icon as category_icon
-    FROM transactions t LEFT JOIN categories c ON t.category_id = c.id
-    WHERE t.user_id = ? ${dateFilter}
-    ORDER BY t.date DESC LIMIT 5
-  `).all(...params);
+  const recentTransactions = filtered
+    .sort((a, b) => b.date.localeCompare(a.date) || b.created_at.localeCompare(a.created_at))
+    .slice(0, 5)
+    .map(t => {
+      const category = categories.find(c => c.id == t.category_id);
+      return {
+        ...t,
+        category_name: category ? category.name : null,
+        category_icon: category ? category.icon : null
+      };
+    });
 
   res.json({
     ...totals,
     balance: totals.total_credit - totals.total_debit,
-    by_category: byCategory,
-    monthly,
+    by_category: Object.values(byCategory).sort((a, b) => b.total - a.total),
+    monthly: Object.values(monthly).sort((a, b) => b.month.localeCompare(a.month)),
     recent: recentTransactions
   });
 });
